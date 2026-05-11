@@ -137,6 +137,9 @@ void OpenFolderPicker(HWND hwnd) {
 }
 
 static int scrollPosX = 0, scrollPosY = 0;
+// Virtual canvas size for the parse-tree panel
+static const int TREE_VIRTUAL_W = 1200;
+static const int TREE_VIRTUAL_H = 1000;
 
 LRESULT CALLBACK TreeWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -165,8 +168,28 @@ LRESULT CALLBACK TreeWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         case WM_MOUSEWHEEL: {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            scrollPosY -= (delta / 2);
-            if (scrollPosY < 0) scrollPosY = 0;
+            // Shift+wheel → horizontal scroll
+            if (GetKeyState(VK_SHIFT) & 0x8000) {
+                RECT rc; GetClientRect(hwnd, &rc);
+                int maxX = TREE_VIRTUAL_W - (rc.right - rc.left);
+                if (maxX < 0) maxX = 0;
+                scrollPosX -= (delta / 2);
+                if (scrollPosX < 0) scrollPosX = 0;
+                if (scrollPosX > maxX) scrollPosX = maxX;
+                SCROLLINFO si = { sizeof(si), SIF_POS };
+                si.nPos = scrollPosX;
+                SetScrollInfo(hwnd, SB_HORZ, &si, TRUE);
+            } else {
+                RECT rc; GetClientRect(hwnd, &rc);
+                int maxY = TREE_VIRTUAL_H - (rc.bottom - rc.top);
+                if (maxY < 0) maxY = 0;
+                scrollPosY -= (delta / 2);
+                if (scrollPosY < 0) scrollPosY = 0;
+                if (scrollPosY > maxY) scrollPosY = maxY;
+                SCROLLINFO si = { sizeof(si), SIF_POS };
+                si.nPos = scrollPosY;
+                SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
+            }
             InvalidateRect(hwnd, NULL, TRUE);
             return 0;
         }
@@ -188,10 +211,15 @@ LRESULT CALLBACK TreeWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             SCROLLINFO si = { sizeof(si), SIF_ALL };
             GetScrollInfo(hwnd, SB_HORZ, &si);
             switch (LOWORD(wParam)) {
-                case SB_LINELEFT: si.nPos -= 20; break;
-                case SB_LINERIGHT: si.nPos += 20; break;
+                case SB_LINELEFT:   si.nPos -= 20; break;
+                case SB_LINERIGHT:  si.nPos += 20; break;
+                case SB_PAGELEFT:   si.nPos -= si.nPage; break;
+                case SB_PAGERIGHT:  si.nPos += si.nPage; break;
                 case SB_THUMBTRACK: si.nPos = HIWORD(wParam); break;
             }
+            // Clamp
+            if (si.nPos < si.nMin) si.nPos = si.nMin;
+            if (si.nPos > (int)(si.nMax - si.nPage + 1)) si.nPos = si.nMax - si.nPage + 1;
             SetScrollInfo(hwnd, SB_HORZ, &si, TRUE);
             scrollPosX = si.nPos;
             InvalidateRect(hwnd, NULL, TRUE);
@@ -297,11 +325,32 @@ void ExecuteCode(HWND hwnd) {
 
         Parser parser(tokens);
         globalAST = parser.parse();
-        
-        RECT astRc; GetClientRect(hASTArea, &astRc);
-        int treeWidth = 500;
-        ShowScrollBar(hASTArea, SB_HORZ, treeWidth > (astRc.right - astRc.left));
-        
+
+        // FIXED: initialise scroll ranges so both axes are scrollable
+        {
+            RECT astRc; GetClientRect(hASTArea, &astRc);
+            int viewW = astRc.right  - astRc.left;
+            int viewH = astRc.bottom - astRc.top;
+
+            SCROLLINFO siH = {};
+            siH.cbSize = sizeof(siH);
+            siH.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+            siH.nMin   = 0;
+            siH.nMax   = TREE_VIRTUAL_W - 1;
+            siH.nPage  = (viewW > 0) ? viewW : 1;
+            siH.nPos   = scrollPosX = 0;   // reset on new parse
+            SetScrollInfo(hASTArea, SB_HORZ, &siH, TRUE);
+
+            SCROLLINFO siV = {};
+            siV.cbSize = sizeof(siV);
+            siV.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+            siV.nMin   = 0;
+            siV.nMax   = TREE_VIRTUAL_H - 1;
+            siV.nPage  = (viewH > 0) ? viewH : 1;
+            siV.nPos   = scrollPosY = 0;
+            SetScrollInfo(hASTArea, SB_VERT, &siV, TRUE);
+        }
+
         InvalidateRect(hASTArea, NULL, TRUE);
 
         double result = globalAST->evaluate();
